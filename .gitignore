@@ -1,0 +1,16 @@
+.DS_Store
+.cache/
+.cpcache/
+.lsp/
+node_modules
+/public/js/
+/.shadow-cljs/
+/target/
+.idea/
+yarn.lock
+*~
+.work
+/build
+/public/build
+.nrepl-port
+.clj-kondo/marick
