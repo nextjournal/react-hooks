@@ -11,8 +11,8 @@
   (-deref [^js this] (aget st 0))
   IReset
   (-reset! [^js this new-value]
-   ;; `constantly` here ensures that if we reset state to a fn,
-   ;; it is stored as-is and not applied to prev value.
+    ;; `constantly` here ensures that if we reset state to a fn,
+    ;; it is stored as-is and not applied to prev value.
     ((aget st 1) (constantly new-value)))
   ISwap
   (-swap! [this f] ((aget st 1) f))
@@ -47,40 +47,35 @@
   [init]
   (WrappedState. (react/useState init)))
 
-(deftype Ref []
-  IDeref
-  (-deref [^js this] (.-current this))
-  IReset
-  (-reset! [^js this new-value] (set! (.-current this) new-value))
-  ISwap
-  (-swap!
-    ([o f] (reset! o (f o)))
-    ([o f a] (reset! o (f o a)))
-    ([o f a b] (reset! o (f o a b)))
-    ([o f a b xs] (reset! o (apply f o a b xs)))))
-
-(defn- make-ref [init]
-  (doto ^js (Ref.)
-    ;; React recognizes any object with a `current` property as a ref
-    (.. -current (set! init))))
+(defn- specify-atom! [ref-obj]
+  (specify! ref-obj
+    IDeref
+    (-deref [^js this] (.-current this))
+    IReset
+    (-reset! [^js this new-value] (set! (.-current this) new-value))
+    ISwap
+    (-swap!
+      ([o f] (reset! o (f o)))
+      ([o f a] (reset! o (f o a)))
+      ([o f a b] (reset! o (f o a b)))
+      ([o f a b xs] (reset! o (apply f o a b xs))))))
 
 (defn use-ref
   "React hook: useRef. Can also be used like an atom."
   ([] (use-ref nil))
-  ([init] (react/useCallback (make-ref init))))
+  ([init] (specify-atom! (react/useRef init))))
 
 (defn use-sync-external-store [subscribe get-snapshot]
   (useSyncExternalStore subscribe get-snapshot))
 
-(defn use-deps
-  ;; TODO - test this
-  "Returns a deps array containing an integer that is incremented for each new `deps` value,
-   as compared with the previous value using ="
-  [deps]
-  (let [!counter (use-ref 0)
-        !prev-deps (use-ref deps)
-        prev-deps @!prev-deps]
-    (reset! !prev-deps deps)
-    (when (not= deps prev-deps)
-      (swap! !counter inc))
-    #js[@!counter]))
+(defn use-watch
+  "Hook for reading value of an IWatchable. Compatible with reading Reagent reactions non-reactively."
+  [x]
+  (let [id (use-callback #js{})]
+    (use-sync-external-store
+     (use-callback
+      (fn [changed!]
+        (add-watch x id (fn [_ _ _ _] (changed!)))
+        #(remove-watch x id))
+      #js[x])
+     #(binding [reagent.ratom/*ratom-context* nil] @x))))
