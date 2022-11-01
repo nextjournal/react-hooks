@@ -11,8 +11,8 @@
   (-deref [^js this] (aget st 0))
   IReset
   (-reset! [^js this new-value]
-    ;; `constantly` here ensures that if we reset state to a fn,
-    ;; it is stored as-is and not applied to prev value.
+    ;; `constantly` allows functions to be passed as `new-value`
+    ;; (use `swap!` to pass a function that should be applied to prev value)
     ((aget st 1) (constantly new-value)))
   ISwap
   (-swap! [this f] ((aget st 1) f))
@@ -47,35 +47,38 @@
   [init]
   (WrappedState. (react/useState init)))
 
-(defn- specify-atom! [ref-obj]
-  (specify! ref-obj
-    IDeref
-    (-deref [^js this] (.-current this))
-    IReset
-    (-reset! [^js this new-value] (set! (.-current this) new-value))
-    ISwap
-    (-swap!
-      ([o f] (reset! o (f o)))
-      ([o f a] (reset! o (f o a)))
-      ([o f a b] (reset! o (f o a b)))
-      ([o f a b xs] (reset! o (apply f o a b xs))))))
+(deftype Ref []
+  IDeref
+  (-deref [^js this] (.-current this))
+  IReset
+  (-reset! [^js this new-value] (set! (.-current this) new-value))
+  ISwap
+  (-swap! [o f] (reset! o (f o)))
+  (-swap! [o f a] (reset! o (f o a)))
+  (-swap! [o f a b] (reset! o (f o a b)))
+  (-swap! [o f a b xs] (reset! o (apply f o a b xs))))
+
+(defn- make-ref [init]
+  ;; React recognizes any object with a `current` property as a ref
+  (let [ref ^js (Ref.)]
+    (set! (.-current ref) init)
+    ref))
 
 (defn use-ref
   "React hook: useRef. Can also be used like an atom."
   ([] (use-ref nil))
-  ([init] (specify-atom! (react/useRef init))))
+  ([init] (react/useCallback (make-ref init))))
 
 (defn use-sync-external-store [subscribe get-snapshot]
   (useSyncExternalStore subscribe get-snapshot))
 
-(defn use-watch
-  "Hook for reading value of an IWatchable. Compatible with reading Reagent reactions non-reactively."
-  [x]
-  (let [id (use-callback #js{})]
-    (use-sync-external-store
-     (use-callback
-      (fn [changed!]
-        (add-watch x id (fn [_ _ _ _] (changed!)))
-        #(remove-watch x id))
-      #js[x])
-     #(binding [reagent.ratom/*ratom-context* nil] @x))))
+(defn use-deps
+  "Wraps a value to pass as React `deps`, using a custom equal? check (default: clojure.core/=)"
+  ([deps] (use-deps deps =))
+  ([deps equal?]
+   (let [!counter (use-ref 0)
+         !prev-deps (use-ref deps)
+         changed? (not (equal? deps @!prev-deps))]
+     (reset! !prev-deps deps)
+     (when changed? (swap! !counter inc))
+     #js[@!counter])))
