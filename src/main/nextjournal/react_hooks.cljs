@@ -11,8 +11,8 @@
   (-deref [^js this] (aget st 0))
   IReset
   (-reset! [^js this new-value]
-    ;; `constantly` allows functions to be passed as `new-value`
-    ;; (use `swap!` to pass a function that should be applied to prev value)
+   ;; `constantly` allows functions to be passed as `new-value`
+   ;; (use `swap!` to pass a function that should be applied to prev value)
     ((aget st 1) (constantly new-value)))
   ISwap
   (-swap! [this f] ((aget st 1) f))
@@ -47,27 +47,25 @@
   [init]
   (WrappedState. (react/useState init)))
 
-(deftype Ref []
+(deftype Ref [current]
   IDeref
-  (-deref [^js this] (.-current this))
+  (-deref [^js this] current)
   IReset
-  (-reset! [^js this new-value] (set! (.-current this) new-value))
+  (-reset! [^js this new-value]
+   ;; we must use the (.-current ^js this) form here to ensure that
+   ;; `current` is not renamed by the closure compiler
+   ;; (react needs to see it)
+    (set! (.-current ^js this) new-value))
   ISwap
   (-swap! [o f] (reset! o (f o)))
   (-swap! [o f a] (reset! o (f o a)))
   (-swap! [o f a b] (reset! o (f o a b)))
   (-swap! [o f a b xs] (reset! o (apply f o a b xs))))
 
-(defn- make-ref [init]
-  ;; React recognizes any object with a `current` property as a ref
-  (let [ref ^js (Ref.)]
-    (set! (.-current ref) init)
-    ref))
-
 (defn use-ref
   "React hook: useRef. Can also be used like an atom."
   ([] (use-ref nil))
-  ([init] (react/useCallback (make-ref init))))
+  ([init] (react/useCallback (Ref. init))))
 
 (defn use-sync-external-store [subscribe get-snapshot]
   (useSyncExternalStore subscribe get-snapshot))
@@ -82,3 +80,38 @@
      (reset! !prev-deps deps)
      (when changed? (swap! !counter inc))
      #js[@!counter])))
+
+(defn- invoke-fn
+  "Invoke (f x) if f is a function, otherwise return f"
+  [f x]
+  (if (fn? f)
+    (f x)
+    f))
+
+(defn use-force-update []
+  (-> (react/useReducer inc 0)
+      (aget 1)))
+
+(defn use-state-with-deps
+  ;; see https://github.com/peterjuras/use-state-with-deps/blob/main/src/index.ts
+  "React hook: like `use-state` but will reset state to `init` when `deps` change.
+  - init may be a function, receiving previous state
+  - deps will be compared using clojure ="
+  [init deps]
+  (let [!state (use-ref
+                (use-memo
+                 #(invoke-fn init nil)))
+        !prev-deps (use-ref deps)
+        _ (when-not (= deps @!prev-deps)
+            (reset! !state (invoke-fn init @!state))
+            (reset! !prev-deps deps))
+        force-update! (use-force-update)
+        update-fn (use-callback
+                   (fn [x]
+                     (let [prev-state @!state
+                           next-state (invoke-fn x prev-state)]
+                       (when (not= prev-state next-state)
+                         (reset! !state next-state)
+                         (force-update!))
+                       next-state)))]
+    (WrappedState. #js[@!state update-fn])))
